@@ -42,9 +42,9 @@ struct Cli {
     #[arg(long, global = true)]
     cloud: bool,
 
-    /// HTTP endpoint of Spice
-    #[arg(long, global = true, default_value = "http://127.0.0.1:8090")]
-    http_endpoint: String,
+    /// Flight endpoint the CLI uses to connect to a running Spice runtime (HTTP used only where Flight is unavailable)
+    #[arg(long, global = true, default_value = "http://127.0.0.1:50051")]
+    endpoint: String,
 
     /// The path to the root certificate file used to verify the Spice.ai runtime server certificate
     #[arg(long, global = true)]
@@ -167,7 +167,7 @@ fn main() {
 fn run_cli(cli: Cli) -> Result<()> {
     // Create runtime context from CLI args
     let ctx = RuntimeContext::with_args(
-        Some(cli.http_endpoint),
+        Some(cli.endpoint),
         cli.api_key,
         cli.cloud,
         cli.tls_root_certificate_file,

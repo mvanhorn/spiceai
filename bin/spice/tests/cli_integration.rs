@@ -799,10 +799,10 @@ mod run {
     }
 
     #[test]
-    fn test_run_with_global_http_endpoint_flag() {
-        // Verify global --http-endpoint flag works with run command
+    fn test_run_with_global_endpoint_flag() {
+        // Verify global --endpoint flag works with run command
         let mut cmd = spice_cmd();
-        cmd.arg("--http-endpoint")
+        cmd.arg("--endpoint")
             .arg("http://127.0.0.1:9999")
             .arg("run")
             .arg("--help")
@@ -861,7 +861,7 @@ mod run {
     fn test_run_with_combined_global_and_local_flags() {
         // Verify global and local flags can be combined
         let mut cmd = spice_cmd();
-        cmd.arg("--http-endpoint")
+        cmd.arg("--endpoint")
             .arg("http://127.0.0.1:9999")
             .arg("--api-key")
             .arg("my-key")
@@ -926,9 +926,9 @@ mod global_flags {
     }
 
     #[test]
-    fn test_http_endpoint_flag() {
+    fn test_endpoint_flag() {
         let mut cmd = spice_cmd();
-        cmd.arg("--http-endpoint")
+        cmd.arg("--endpoint")
             .arg("http://custom:8080")
             .arg("--help")
             .assert()
@@ -936,9 +936,9 @@ mod global_flags {
     }
 
     #[test]
-    fn test_http_endpoint_flag_with_ip() {
+    fn test_endpoint_flag_with_ip() {
         let mut cmd = spice_cmd();
-        cmd.arg("--http-endpoint")
+        cmd.arg("--endpoint")
             .arg("http://127.0.0.1:9999")
             .arg("--help")
             .assert()
@@ -969,7 +969,7 @@ mod global_flags {
     fn test_all_global_flags_combined() {
         let mut cmd = spice_cmd();
         cmd.arg("-vv")
-            .arg("--http-endpoint")
+            .arg("--endpoint")
             .arg("http://127.0.0.1:9999")
             .arg("--api-key")
             .arg("my-api-key")
@@ -983,7 +983,7 @@ mod global_flags {
     #[test]
     fn test_global_flags_work_with_status_command() {
         let mut cmd = spice_cmd();
-        cmd.arg("--http-endpoint")
+        cmd.arg("--endpoint")
             .arg("http://127.0.0.1:9999")
             .arg("--api-key")
             .arg("test-key")
@@ -996,7 +996,7 @@ mod global_flags {
     #[test]
     fn test_global_flags_work_with_sql_command() {
         let mut cmd = spice_cmd();
-        cmd.arg("--http-endpoint")
+        cmd.arg("--endpoint")
             .arg("http://127.0.0.1:9999")
             .arg("sql")
             .arg("--help")
@@ -1057,7 +1057,7 @@ mod mode_tests {
     fn test_local_mode_explicit_endpoint() {
         // Local mode with explicit endpoint
         let mut cmd = spice_cmd();
-        cmd.arg("--http-endpoint")
+        cmd.arg("--endpoint")
             .arg("http://localhost:8090")
             .arg("--help")
             .assert()
@@ -1137,11 +1137,11 @@ mod mode_tests {
     }
 
     #[test]
-    fn test_cloud_and_http_endpoint_mutually_exclusive_behavior() {
-        // When --cloud is used, it should override --http-endpoint
+    fn test_cloud_and_endpoint_mutually_exclusive_behavior() {
+        // When --cloud is used, it should override --endpoint
         // (The context.rs tests verify this behavior, here we just verify flags parse)
         let mut cmd = spice_cmd();
-        cmd.arg("--http-endpoint")
+        cmd.arg("--endpoint")
             .arg("http://custom:8080")
             .arg("--cloud")
             .arg("--help")

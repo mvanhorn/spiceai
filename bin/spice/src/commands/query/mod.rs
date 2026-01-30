@@ -109,7 +109,9 @@ struct TrackedQuery {
 
 /// Build the spiceai SDK client from the runtime context.
 async fn build_client(ctx: &RuntimeContext) -> Result<Arc<Client>> {
-    let mut builder = ClientBuilder::new().http_url(ctx.http_endpoint());
+    let mut builder = ClientBuilder::new()
+        .flight_url(ctx.flight_endpoint())
+        .http_url(ctx.http_endpoint());
 
     if let Some(api_key) = ctx.api_key() {
         builder = builder.api_key(api_key);

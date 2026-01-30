@@ -25,11 +25,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
+use url::Url;
 
 /// Constants for Spice paths and filenames
 const DOT_SPICE: &str = ".spice";
 const SPICED_FILENAME: &str = "spiced";
 const SPICEPODS_DIR: &str = "spicepods";
+const DEFAULT_HTTP_ENDPOINT: &str = "http://127.0.0.1:8090";
+const DEFAULT_HTTP_SOCKET: &str = "127.0.0.1:8090";
+const DEFAULT_FLIGHT_ENDPOINT: &str = "http://127.0.0.1:50051";
+const CLOUD_HTTP_ENDPOINT: &str = "https://flight.spiceai.io";
+const CLOUD_FLIGHT_ENDPOINT: &str = "https://flight.spiceai.io";
 
 /// Runtime context holding paths and configuration for CLI operations.
 #[derive(Debug, Clone)]
@@ -48,6 +54,9 @@ pub struct RuntimeContext {
 
     /// HTTP endpoint for runtime API
     http_endpoint: String,
+
+    /// Flight endpoint for runtime Flight API
+    flight_endpoint: String,
 
     /// API key for authentication
     api_key: Option<String>,
@@ -92,7 +101,8 @@ impl RuntimeContext {
             spice_bin_dir,
             app_dir,
             pods_dir,
-            http_endpoint: "http://127.0.0.1:8090".to_string(),
+            http_endpoint: DEFAULT_HTTP_ENDPOINT.to_string(),
+            flight_endpoint: DEFAULT_FLIGHT_ENDPOINT.to_string(),
             api_key: None,
             is_cloud: false,
             user_agent: Self::default_user_agent(),
@@ -104,19 +114,22 @@ impl RuntimeContext {
 
     /// Create a runtime context from CLI arguments.
     pub fn with_args(
-        http_endpoint: Option<String>,
+        endpoint: Option<String>,
         api_key: Option<String>,
         is_cloud: bool,
         tls_root_certificate_file: Option<String>,
     ) -> Result<Self> {
         let mut ctx = Self::new()?;
 
-        if let Some(endpoint) = http_endpoint {
-            ctx.http_endpoint = endpoint;
+        if let Some(endpoint) = endpoint {
+            let (flight, http) = Self::reconcile_endpoints(&endpoint);
+            ctx.flight_endpoint = flight;
+            ctx.http_endpoint = http;
         }
 
         if is_cloud {
-            ctx.http_endpoint = "https://data.spiceai.io".to_string();
+            ctx.http_endpoint = CLOUD_HTTP_ENDPOINT.to_string();
+            ctx.flight_endpoint = CLOUD_FLIGHT_ENDPOINT.to_string();
             ctx.is_cloud = true;
         }
 
@@ -139,6 +152,53 @@ impl RuntimeContext {
             std::env::consts::OS,
             std::env::consts::ARCH
         )
+    }
+
+    /// Derive flight and HTTP endpoints from a user-supplied base endpoint.
+    ///
+    /// Heuristics:
+    /// - If a port is specified and is 8090, treat it as the HTTP port and pair Flight on 50051.
+    /// - If a port is specified and is 50051, treat it as the Flight port and pair HTTP on 8090.
+    /// - If a port is specified and not a default, use the same host/port for both protocols.
+    /// - If no port is specified, use defaults (Flight 50051, HTTP 8090) on the given host.
+    fn reconcile_endpoints(raw: &str) -> (String, String) {
+        let candidate = if raw.contains("://") {
+            raw.to_string()
+        } else {
+            format!("http://{raw}")
+        };
+
+        if let Ok(url) = url::Url::parse(&candidate) {
+            let host = url.host_str().unwrap_or("127.0.0.1");
+            let scheme = url.scheme();
+            let is_https = scheme.eq_ignore_ascii_case("https");
+            let http_scheme = if is_https { "https" } else { "http" };
+            let flight_scheme = if is_https { "https" } else { "http" };
+
+            match url.port() {
+                Some(8090) => (
+                    format!("{flight_scheme}://{host}:50051"),
+                    format!("{http_scheme}://{host}:8090"),
+                ),
+                Some(50051) => (
+                    format!("{flight_scheme}://{host}:50051"),
+                    format!("{http_scheme}://{host}:8090"),
+                ),
+                Some(port) => {
+                    let endpoint = format!("{http_scheme}://{host}:{port}");
+                    (endpoint.clone(), endpoint)
+                }
+                None => (
+                    format!("{flight_scheme}://{host}:50051"),
+                    format!("{http_scheme}://{host}:8090"),
+                ),
+            }
+        } else {
+            (
+                DEFAULT_FLIGHT_ENDPOINT.to_string(),
+                DEFAULT_HTTP_ENDPOINT.to_string(),
+            )
+        }
     }
 
     /// Load API key from .env or .env.local file.
@@ -198,6 +258,12 @@ impl RuntimeContext {
     #[must_use]
     pub fn http_endpoint(&self) -> &str {
         &self.http_endpoint
+    }
+
+    /// Get the Flight endpoint.
+    #[must_use]
+    pub fn flight_endpoint(&self) -> &str {
+        &self.flight_endpoint
     }
 
     /// Get the API key if set.
@@ -283,10 +349,10 @@ impl RuntimeContext {
         cmd.arg("--pods-watcher-enabled");
         cmd.args(args);
 
-        // Add HTTP endpoint (use override if provided, otherwise use context default)
+        // Add HTTP endpoint (use override if provided, otherwise bind to the default local socket)
         cmd.arg("--http");
         let http_addr = http_endpoint_override.map_or_else(
-            || self.http_socket_address(),
+            || DEFAULT_HTTP_SOCKET.to_string(),
             |ep| {
                 ep.trim_start_matches("http://")
                     .trim_start_matches("https://")
@@ -453,6 +519,7 @@ mod tests {
             app_dir: PathBuf::from("/test/app"),
             pods_dir: PathBuf::from("/test/app/spicepods"),
             http_endpoint: "http://127.0.0.1:8090".to_string(),
+            flight_endpoint: "http://127.0.0.1:50051".to_string(),
             api_key: None,
             is_cloud: false,
             user_agent: "spice/test (test; test)".to_string(),
@@ -477,6 +544,7 @@ mod tests {
             app_dir: PathBuf::from("/test/app"),
             pods_dir: PathBuf::from("/test/app/spicepods"),
             http_endpoint: "http://127.0.0.1:8090".to_string(),
+            flight_endpoint: "http://127.0.0.1:50051".to_string(),
             api_key: None,
             is_cloud: false,
             user_agent: "spice/test (test; test)".to_string(),
@@ -527,6 +595,22 @@ mod tests {
         assert!(
             args.contains(&"127.0.0.1:8090".to_string()),
             "Should include HTTP socket address, got: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_get_run_cmd_uses_default_binding_when_remote_endpoint_set() {
+        let (mut ctx, _temp_dir) = create_test_context_with_runtime();
+        ctx.http_endpoint = "https://remote.example.com:443".to_string();
+
+        let cmd = ctx
+            .get_run_cmd(&[], None)
+            .expect("get_run_cmd should succeed");
+        let args = get_cmd_args(&cmd);
+
+        assert!(
+            args.contains(&"127.0.0.1:8090".to_string()),
+            "Should still bind spiced to the local default socket when CLI connects remotely"
         );
     }
 
@@ -721,11 +805,10 @@ mod tests {
         ctx.api_key = Some("my-api-key".to_string());
         ctx.tls_root_certificate_file = Some("/cert.pem".to_string());
         ctx.user_agent = "test-agent".to_string();
-        ctx.http_endpoint = "http://localhost:9090".to_string();
 
         let extra_args = vec!["-vv".to_string()];
         let cmd = ctx
-            .get_run_cmd(&extra_args, None)
+            .get_run_cmd(&extra_args, Some("http://localhost:9090"))
             .expect("get_run_cmd should succeed");
         let args = get_cmd_args(&cmd);
 
@@ -806,7 +889,7 @@ mod tests {
             RuntimeContext::with_args(None, None, true, None).expect("with_args should succeed");
 
         assert!(ctx.is_cloud());
-        assert_eq!(ctx.http_endpoint(), "https://data.spiceai.io");
+        assert_eq!(ctx.http_endpoint(), "https://flight.spiceai.io");
     }
 
     #[test]
@@ -894,6 +977,7 @@ mod tests {
 
         assert!(!ctx.is_cloud());
         assert_eq!(ctx.http_endpoint(), "http://127.0.0.1:8090");
+        assert_eq!(ctx.flight_endpoint(), "http://127.0.0.1:50051");
     }
 
     #[test]
@@ -909,6 +993,7 @@ mod tests {
 
         assert!(!ctx.is_cloud());
         assert_eq!(ctx.http_endpoint(), "http://192.168.1.100:8090");
+        assert_eq!(ctx.flight_endpoint(), "http://192.168.1.100:50051");
     }
 
     #[test]
@@ -923,7 +1008,23 @@ mod tests {
         .expect("with_args should succeed");
 
         assert!(ctx.is_cloud());
-        assert_eq!(ctx.http_endpoint(), "https://data.spiceai.io");
+        assert_eq!(ctx.http_endpoint(), "https://flight.spiceai.io");
+        assert_eq!(ctx.flight_endpoint(), "https://flight.spiceai.io");
+    }
+
+    #[test]
+    fn test_local_mode_custom_flight_endpoint_derives_http() {
+        // Custom Flight endpoint should map HTTP to the same host with default HTTP port
+        let ctx = RuntimeContext::with_args(
+            Some("http://10.0.0.5:50051".to_string()),
+            None,
+            false,
+            None,
+        )
+        .expect("with_args should succeed");
+
+        assert_eq!(ctx.flight_endpoint(), "http://10.0.0.5:50051");
+        assert_eq!(ctx.http_endpoint(), "http://10.0.0.5:8090");
     }
 
     #[test]
@@ -934,7 +1035,7 @@ mod tests {
                 .expect("with_args should succeed");
 
         assert!(ctx.is_cloud());
-        assert_eq!(ctx.http_endpoint(), "https://data.spiceai.io");
+        assert_eq!(ctx.http_endpoint(), "https://flight.spiceai.io");
         assert_eq!(ctx.api_key(), Some("cloud-api-key-12345"));
     }
 
@@ -981,7 +1082,7 @@ mod tests {
             RuntimeContext::with_args(None, None, true, None).expect("with_args should succeed");
 
         // Cloud mode socket address should strip https://
-        assert_eq!(ctx.http_socket_address(), "data.spiceai.io");
+        assert_eq!(ctx.http_socket_address(), "flight.spiceai.io");
     }
 
     #[test]

@@ -169,7 +169,9 @@ fn format_traceparent(trace_id: &TraceId) -> String {
 
 /// Build a spiceai client from the runtime context.
 async fn build_spice_client(ctx: &RuntimeContext) -> Result<spiceai::Client> {
-    let mut builder = ClientBuilder::new().http_url(ctx.http_endpoint());
+    let mut builder = ClientBuilder::new()
+        .flight_url(ctx.flight_endpoint())
+        .http_url(ctx.http_endpoint());
 
     if let Some(api_key) = ctx.api_key() {
         builder = builder.api_key(api_key);

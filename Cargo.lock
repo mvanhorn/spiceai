@@ -16900,6 +16900,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "urlencoding",
  "zip 6.0.0",
 ]

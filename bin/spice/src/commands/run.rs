@@ -44,11 +44,11 @@ Examples:
 See more at: https://spiceai.org/docs/"#
 )]
 pub struct RunArgs {
-    /// Specifies the runtime HTTP endpoint (overrides global --http-endpoint for binding)
+    /// Specifies the runtime HTTP endpoint binding passed to spiced
     #[arg(long)]
     http_endpoint: Option<String>,
 
-    /// Specifies the runtime Flight endpoint
+    /// Specifies the runtime Flight endpoint binding passed to spiced
     #[arg(long)]
     flight_endpoint: Option<String>,
 
