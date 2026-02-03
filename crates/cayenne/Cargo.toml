@@ -56,7 +56,7 @@ aegis = { version = "0.9.3", default-features = false, features = [
 
 [features]
 default = []
-turso = ["dep:turso"]
+turso = ["dep:turso", "data_components/turso"]
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }

@@ -15,6 +15,10 @@ limitations under the License.
 */
 
 //! Turso implementation of the metastore backend.
+//!
+//! Uses `TursoConnectionPool` from data_components for efficient connection
+//! management. The pool caches a single connection that is cloned for concurrent
+//! access (`Connection` is `Clone + Send + Sync`).
 
 use super::{
     ExecuteParams, MetastoreBackend, MetastoreGetValue, MetastoreRow, MetastoreValue, QueryParams,
@@ -22,15 +26,21 @@ use super::{
 };
 use crate::catalog::{CatalogError, CatalogResult};
 use async_trait::async_trait;
-use std::sync::Arc;
-use std::{fmt::Debug, path::Path};
-use tokio::sync::Mutex;
-use turso::{Builder, Connection, Database, Value as TursoValue};
+use data_components::turso::TursoConnectionPool;
+use std::{fmt::Debug, path::Path, sync::Arc};
+use tokio::sync::OnceCell;
+use turso::{Connection, Value as TursoValue};
 
-/// Turso-based metastore backend.
+/// Turso-based metastore backend with a cached connection pool.
+///
+/// Uses `TursoConnectionPool` from data_components which caches a single
+/// connection. The `Connection` type is `Clone + Send + Sync`, so cloning
+/// is cheap (just an Arc increment) and allows concurrent reads.
 pub struct TursoMetastore {
-    db: Arc<Mutex<Option<Database>>>,
     connection_string: String,
+    /// Cached connection pool - lazily initialized on first use via `OnceCell`,
+    /// ensuring exactly one pool is created even under concurrent access.
+    pool: OnceCell<Arc<TursoConnectionPool>>,
 }
 
 impl Debug for TursoMetastore {
@@ -43,10 +53,11 @@ impl Debug for TursoMetastore {
 
 impl TursoMetastore {
     /// Create a new Turso metastore.
+    #[must_use]
     pub fn new(connection_string: impl Into<String>) -> Self {
         Self {
-            db: Arc::new(Mutex::new(None)),
             connection_string: connection_string.into(),
+            pool: OnceCell::new(),
         }
     }
 
@@ -57,55 +68,46 @@ impl TursoMetastore {
             .unwrap_or(&self.connection_string)
     }
 
-    /// Get or create the database connection.
-    async fn get_db(&self) -> CatalogResult<Database> {
-        let mut db_guard = self.db.lock().await;
-
-        if let Some(db) = db_guard.as_ref() {
-            return Ok(db.clone());
-        }
-
-        // Create the database
-        let db_path = self.db_path();
-
-        // Create parent directory if it doesn't exist
-        let db_dir =
-            Path::new(db_path)
-                .parent()
-                .ok_or_else(|| CatalogError::InvalidDatabasePath {
-                    path: db_path.to_string(),
+    /// Get or create the cached connection pool.
+    ///
+    /// Uses `OnceCell` to ensure the pool is created exactly once,
+    /// even when multiple tasks call this method concurrently.
+    async fn get_pool(&self) -> CatalogResult<Arc<TursoConnectionPool>> {
+        self.pool
+            .get_or_try_init(|| async {
+                // Create parent directory if it doesn't exist
+                let db_path = self.db_path();
+                let db_dir = Path::new(db_path).parent().ok_or_else(|| {
+                    CatalogError::InvalidDatabasePath {
+                        path: db_path.to_string(),
+                    }
                 })?;
 
-        if !db_dir.exists() {
-            tokio::fs::create_dir_all(db_dir).await?;
-        }
+                if !db_dir.exists() {
+                    tokio::fs::create_dir_all(db_dir).await?;
+                }
 
-        let db = Builder::new_local(db_path)
-            .build()
+                // Create the connection pool (handles connection caching internally)
+                let pool = TursoConnectionPool::new(db_path)
+                    .await
+                    .map_err(|e| CatalogError::Database {
+                        message: format!("Failed to create Turso connection pool: {e}"),
+                    })?;
+
+                Ok(Arc::new(pool))
+            })
             .await
-            .map_err(|e| CatalogError::Database {
-                message: format!("Failed to open Turso database: {e}"),
-            })?;
-
-        *db_guard = Some(db.clone());
-        Ok(db)
+            .cloned()
     }
 
-    /// Get a connection from the database.
+    /// Get a connection from the cached pool.
+    ///
+    /// Returns a clone of the cached connection (cheap Arc increment).
     async fn get_conn(&self) -> CatalogResult<Connection> {
-        let db = self.get_db().await?;
-        let conn = db.connect().map_err(|e| CatalogError::Database {
-            message: format!("Failed to connect to Turso database: {e}"),
-        })?;
-
-        // Set busy timeout to wait for locks instead of immediately returning SQLITE_BUSY.
-        // This fixes issue #8826 where concurrent transactions to the same database fail.
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(|e| CatalogError::Database {
-                message: format!("Failed to set busy timeout: {e}"),
-            })?;
-
-        Ok(conn)
+        let pool = self.get_pool().await?;
+        pool.connect().await.map_err(|e| CatalogError::Database {
+            message: format!("Failed to get connection from pool: {e}"),
+        })
     }
 
     /// Schema for the `cayenne_table` table.
@@ -304,7 +306,7 @@ impl MetastoreBackend for TursoMetastore {
 
         // NORMAL synchronous mode: safe with WAL, more performant than FULL
         // With WAL mode, NORMAL only syncs at checkpoints, not on every commit
-        conn.execute("PRAGMA synchronous = NORMAL", ())
+        conn.execute("PRAGMA synchronous = FULL", ())
             .await
             .map_err(|e| CatalogError::Database {
                 message: format!("Failed to set synchronous mode: {e}"),

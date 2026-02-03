@@ -148,7 +148,7 @@ use datafusion_federation::{
 };
 use futures::stream::{self, StreamExt, TryStreamExt};
 use snafu::prelude::*;
-use turso::{Builder, Connection, Database, Value as TursoValue};
+use turso::{Builder, Connection, Value as TursoValue};
 
 use crate::delete::{DeletionExec, DeletionSink, DeletionTableProvider};
 
@@ -397,7 +397,8 @@ fn is_now_function(func: &Function) -> bool {
 /// caches pool instances per database file for even better performance.
 #[derive(Debug)]
 pub struct TursoConnectionPool {
-    database: Arc<Database>,
+    /// Cached connection - cloning is cheap (just Arc increment)
+    connection: Connection,
     db_path: String,
     timestamp_format: TimestampFormat,
 }
@@ -427,21 +428,28 @@ impl TursoConnectionPool {
             .await
             .context(TursoDatabaseSnafu)?;
 
+        let connection = database.connect().context(TursoDatabaseSnafu)?;
+
+        // Set busy timeout to wait for locks instead of immediately returning SQLITE_BUSY.
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .context(TursoDatabaseSnafu)?;
+
         Ok(Self {
-            database: Arc::new(database),
+            connection,
             db_path: path.to_string(),
             timestamp_format,
         })
     }
 
-    /// Establishes a new connection from the pool
+    /// Returns a clone of the cached connection.
     ///
-    /// This method is lightweight and can be called frequently. Each connection
-    /// shares the underlying database instance, making it efficient for high-frequency
-    /// operations.
+    /// This method is very lightweight - `Connection` is `Clone + Send + Sync`,
+    /// and cloning is just an Arc increment. The cached connection is shared
+    /// across all callers for optimal performance.
     #[expect(clippy::unused_async)]
     pub async fn connect(&self) -> Result<Connection> {
-        self.database.connect().context(TursoDatabaseSnafu)
+        Ok(self.connection.clone())
     }
 
     /// Returns true if this is an in-memory database
